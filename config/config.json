@@ -1,0 +1,19 @@
+{
+    "root_dir": "./",
+    "exclude_dirs": ["venv", "__pycache__", "node_modules"],
+    "exclude_files": ["README.md", "LICENSE"],
+    "skip_extensions": [".exe", ".bin"],
+    "context_keywords": {
+        "buffer_operations": ["buffer", "window", "memory", "slide", "cache", "store"],
+        "data_management": ["data", "storage", "retrieve", "fetch", "save"],
+        "performance": ["optimize", "performance", "efficiency", "speed"]
+    },
+    "openai_model": "gpt-4",
+    "openai_max_tokens": 150,
+    "openai_temperature": 0.5,
+    "concurrency": 5,
+    "chunk_max_length": 500,
+    "output_file": "documentation.md",
+    "project_info": "Your project information here.",
+    "style_guidelines": "Your documentation style guidelines here."
+}
