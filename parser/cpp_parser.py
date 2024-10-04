@@ -1,207 +1,167 @@
-# parser/cpp_parser.py
+# language_functions/cpp_handler.py
 
-import clang.cindex
+import subprocess
+import json
 import logging
-import os
+import re
+from typing import Dict, Any
+from language_functions.base_handler import BaseHandler
 
 logger = logging.getLogger(__name__)
 
-# Set the library path for libclang
-# You may need to adjust this path based on your system
-clang.cindex.Config.set_library_file('/usr/lib/llvm-10/lib/libclang-10.so.1')
+class CppHandler(BaseHandler):
+    """Handler for the C++ programming language."""
 
-def extract_structure(code, file_name='temp.cpp'):
-    """
-    Parses C++ code to extract classes, functions, and methods.
+    def extract_structure(self, code: str, file_path: str) -> Dict[str, Any]:
+        """Extracts structure from C++ code using libclang."""
+        try:
+            # Run clang command to get JSON AST
+            process = subprocess.run(
+                ["clang", "-Xclang", "-ast-dump=json", "-fsyntax-only", file_path],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            ast_json = process.stdout
+            ast_data = json.loads(ast_json)
 
-    Parameters:
-        code (str): The C++ code as a string.
-        file_name (str): A temporary file name to use for parsing.
+            structure = {
+                "summary": "",
+                "changes_made": [],
+                "functions": [],
+                "classes": []
+            }
 
-    Returns:
-        dict: Structure containing classes and functions.
-    """
-    try:
-        # Write code to a temporary file
-        with open(file_name, 'w', encoding='utf-8') as f:
-            f.write(code)
-        
-        index = clang.cindex.Index.create()
-        tu = index.parse(file_name, args=['-std=c++11'])
+            def traverse_ast(node):
+                """Recursively traverses the C++ AST."""
+                kind = node.get("kind", "")
+                if kind == "FunctionDecl":
+                    func = {
+                        "name": node["name"],
+                        "args": [param["name"] for param in node.get("inner", []) if param.get("kind", "") == "ParmVarDecl"],
+                        "docstring": extract_docstring_from_comment(node.get("inner", [])).strip(),
+                        "async": False  # C++ doesn't have async/await keywords
+                    }
+                    structure["functions"].append(func)
+                elif kind == "CXXRecordDecl" and node.get("tagUsed", "") == "class":
+                    cls = {
+                        "name": node["name"],
+                        "docstring": extract_docstring_from_comment(node.get("inner", [])),
+                        "methods": [],
+                        "attributes": []
+                    }
+                    for member in node.get("inner", []):
+                        if member.get("kind", "") == "CXXMethodDecl":
+                            method = {
+                                "name": member["name"],
+                                "docstring": extract_docstring_from_comment(member.get("inner", [])),
+                                "parameters": [],
+                                "return_value": {"type": member.get("type", {}).get("qualType", ""), "description": ""},
+                                "examples": [],
+                                "error_handling": "",
+                                "assumptions_preconditions": ""
+                            }
+                            for param in member.get("inner", []):
+                                if param.get("kind", "") == "ParmVarDecl":
+                                    param_type = param.get("type", {}).get("qualType", "")
+                                    method["parameters"].append({"name": param["name"], "type": param_type, "description": ""})
+                            cls["methods"].append(method)
+                        elif member.get("kind", "") == "FieldDecl":
+                            attr = {
+                                "name": member["name"],
+                                "type": member.get("type", {}).get("qualType", ""),
+                                "description": extract_docstring_from_comment(member.get("inner", []))
+                            }
+                            cls["attributes"].append(attr)
+                    structure["classes"].append(cls)
+                for child in node.get("inner", []):
+                    traverse_ast(child)
 
-        structure = {'functions': [], 'classes': []}
+            traverse_ast(ast_data)
+            return structure
 
-        for cursor in tu.cursor.get_children():
-            if cursor.kind == clang.cindex.CursorKind.FUNCTION_DECL:
-                func = {
-                    'name': cursor.spelling,
-                    'args': [arg.spelling for arg in cursor.get_arguments()],
-                    'result_type': cursor.result_type.spelling,
-                    'docstring': extract_comment(cursor)
-                }
-                structure['functions'].append(func)
-            elif cursor.kind == clang.cindex.CursorKind.CLASS_DECL:
-                cls = {
-                    'name': cursor.spelling,
-                    'docstring': extract_comment(cursor),
-                    'methods': []
-                }
-                for c in cursor.get_children():
-                    if c.kind == clang.cindex.CursorKind.CXX_METHOD:
-                        method = {
-                            'name': c.spelling,
-                            'args': [arg.spelling for arg in c.get_arguments()],
-                            'result_type': c.result_type.spelling,
-                            'docstring': extract_comment(c),
-                            'access_specifier': c.access_specifier.name
-                        }
-                        cls['methods'].append(method)
-                structure['classes'].append(cls)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error running clang: {e.stderr}")
+            return {}
+        except Exception as e:
+            logger.error(f"Error extracting C++ structure: {e}", exc_info=True)
+            return {}
 
-        # Clean up temporary file
-        os.remove(file_name)
-        return structure
-    except Exception as e:
-        logger.error(f"Error parsing C++ code: {e}")
-        return None
+    def insert_docstrings(self, original_code: str, documentation: Dict[str, Any]) -> str:
+        """Inserts Doxygen-style docstrings into C++ code."""
+        try:
+            modified_code = original_code
 
-def extract_comment(cursor):
-    """
-    Extracts the documentation comment associated with a cursor.
+            for func in documentation.get("functions", []):
+                docstring = func.get("docstring", "").strip()
+                if docstring:
+                    # Regex to find function definition (handles different return types and parameters)
+                    pattern = r"(?P<indent>\s*)(?P<return_type>[\w\s\*\&]+)\s+(?P<name>" + re.escape(func["name"]) + r")\s*\((?P<params>[^)]*)\)\s*\{?"
+                    match = re.search(pattern, modified_code)
+                    if match:
+                        indent = match.group("indent")
+                        docstring_lines = docstring.splitlines()
+                        formatted_docstring = "\n".join([f"{indent}/// {line}" for line in docstring_lines])
+                        modified_code = re.sub(pattern, f"{indent}/**\n{formatted_docstring}\n{indent}*/\n{match.group(0)}", modified_code)
 
-    Parameters:
-        cursor: A clang.cindex Cursor object.
+            for cls in documentation.get("classes", []):
+                docstring = cls.get("docstring", "").strip()
+                if docstring:
+                    # Regex to find class definition
+                    pattern = r"(?P<indent>\s*)class\s+(?P<name>" + re.escape(cls["name"]) + r")\s*\{?"
+                    match = re.search(pattern, modified_code)
+                    if match:
+                        indent = match.group("indent")
+                        docstring_lines = docstring.splitlines()
+                        formatted_docstring = "\n".join([f"{indent}/// {line}" for line in docstring_lines])
+                        modified_code = re.sub(pattern, f"{indent}/**\n{formatted_docstring}\n{indent}*/\n{match.group(0)}", modified_code)
 
-    Returns:
-        str: The extracted comment or an empty string.
-    """
-    raw_comment = cursor.raw_comment
-    if raw_comment:
-        return raw_comment.strip()
-    return ''
+                for method in cls.get("methods", []):
+                    docstring = method.get("docstring", "").strip()
+                    if docstring:
+                        # Regex to find method definition (within the class)
+                        pattern = r"(?P<indent>\s*)(?P<return_type>[\w\s\*\&]+)\s+(?P<class_name>" + re.escape(cls["name"]) + r")::(?P<name>" + re.escape(method["name"]) + r")\s*\((?P<params>[^)]*)\)\s*\{?"
+                        match = re.search(pattern, modified_code)
+                        if match:
+                            indent = match.group("indent")
+                            docstring_lines = docstring.splitlines()
+                            formatted_docstring = "\n".join([f"{indent}/// {line}" for line in docstring_lines])
+                            modified_code = re.sub(pattern, f"{indent}/**\n{formatted_docstring}\n{indent}*/\n{match.group(0)}", modified_code)
 
-def insert_docstrings(code, documentation):
-    """
-    Inserts docstrings into C++ code by adding comments above functions and classes.
+            return modified_code
 
-    Parameters:
-        code (str): Original C++ code.
-        documentation (dict): Documentation to insert.
+        except Exception as e:
+            logger.error(f"Error inserting C++ docstrings: {e}", exc_info=True)
+            return original_code
 
-    Returns:
-        str: Code with inserted docstrings.
-    """
-    try:
-        # Similar to the Java example, we'll insert comments above definitions.
+    def validate_code(self, code: str, file_path: str = None) -> bool:
+        """Validates C++ code using clang."""
+        try:
+            process = subprocess.run(
+                ["clang++", "-fsyntax-only", "-std=c++17", file_path],  # Adjust the C++ standard if needed
+                input=code,
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            if process.returncode == 0:
+                logger.debug("C++ code validation successful.")
+                return True
+            else:
+                logger.error(f"C++ code validation failed:\n{process.stderr}")
+                return False
+        except FileNotFoundError:
+            logger.error("Clang compiler not found. Please install Clang.")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during C++ code validation: {e}")
+            return False
 
-        lines = code.split('\n')
-        code_with_docs = []
-        index = 0
-
-        while index < len(lines):
-            line = lines[index]
-            stripped_line = line.strip()
-            inserted = False
-
-            # Check for class definitions
-            if stripped_line.startswith('class '):
-                class_name = stripped_line.split(' ')[1].split('{')[0]
-                class_doc = next((cls for cls in documentation.get('classes', []) if cls['name'] == class_name), None)
-                if class_doc and class_doc.get('docstring'):
-                    docstring_lines = format_comment_cpp(class_doc['docstring'])
-                    code_with_docs.extend(docstring_lines)
-                    inserted = True
-
-            # Check for function definitions
-            if '(' in stripped_line and ')' in stripped_line and ('{' in stripped_line or ';' in stripped_line):
-                func_name = extract_function_name_cpp(stripped_line)
-                # First, check in functions
-                func_doc = next((func for func in documentation.get('functions', []) if func['name'] == func_name), None)
-                if func_doc and func_doc.get('docstring'):
-                    docstring_lines = format_comment_cpp(func_doc['docstring'])
-                    code_with_docs.extend(docstring_lines)
-                    inserted = True
-                else:
-                    # Then, check in methods
-                    parent_class = get_enclosing_class_cpp(lines, index)
-                    if parent_class:
-                        class_doc = next((cls for cls in documentation.get('classes', []) if cls['name'] == parent_class), None)
-                        if class_doc:
-                            method_doc = next((m for m in class_doc.get('methods', []) if m['name'] == func_name), None)
-                            if method_doc and method_doc.get('docstring'):
-                                docstring_lines = format_comment_cpp(method_doc['docstring'])
-                                code_with_docs.extend(docstring_lines)
-                                inserted = True
-
-            code_with_docs.append(line)
-            index += 1
-
-        modified_code = '\n'.join(code_with_docs)
-        return modified_code
-
-    except Exception as e:
-        logger.error(f"Error inserting C++ docstrings: {e}")
-        return code
-
-def format_comment_cpp(docstring):
-    """
-    Formats a docstring as a C++ comment block.
-
-    Parameters:
-        docstring (str): The docstring to format.
-
-    Returns:
-        List[str]: Lines of the formatted docstring.
-    """
-    lines = docstring.strip().split('\n')
-    formatted = ['/**']
-    for line in lines:
-        formatted.append(f' * {line}')
-    formatted.append(' */')
-    return formatted
-
-def extract_function_name_cpp(signature):
-    """
-    Extracts the function name from a function signature.
-
-    Parameters:
-        signature (str): The function signature.
-
-    Returns:
-        str: The function name.
-    """
-    # Remove possible return type
-    signature = signature.lstrip()
-    if ' ' in signature:
-        signature = ' '.join(signature.split(' ')[1:])
-    # Get name before the '('
-    name = signature.split('(')[0].strip()
-    # Remove any qualifiers
-    name = name.split('::')[-1]
-    return name
-
-def get_enclosing_class_cpp(lines, index):
-    """
-    Determines the enclosing class name for a given line index in C++ code.
-
-    Parameters:
-        lines (List[str]): The lines of code.
-        index (int): The current line index.
-
-    Returns:
-        str: The name of the enclosing class or None.
-    """
-    brace_count = 0
-    while index >= 0:
-        line = lines[index].strip()
-        if '{' in line:
-            brace_count -= line.count('{')
-        if '}' in line:
-            brace_count += line.count('}')
-            if brace_count == 1:
-                # Possible start of a class
-                if line.startswith('class '):
-                    class_name = line.split(' ')[1].split('{')[0]
-                    return class_name
-        index -= 1
-    return None
+def extract_docstring_from_comment(nodes):
+    """Extracts docstring from comment nodes in the AST."""
+    for node in nodes:
+        if node.get("kind", "") == "FullComment":
+            comment = node.get("text", "").strip()
+            if comment.startswith("/**") and comment.endswith("*/"):
+                return comment[3:-2].strip()
+    return ""
