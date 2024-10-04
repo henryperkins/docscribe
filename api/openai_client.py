@@ -81,3 +81,46 @@ async def fetch_documentation(session, prompt, semaphore, model_name, function_s
             else:
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
     return None
+
+async def summarize_text(session, text, semaphore, model_name='gpt-4', retry=3):
+    """
+    Summarizes the given text using OpenAI's GPT-4 model.
+    
+    Parameters:
+        session (aiohttp.ClientSession): The HTTP session.
+        text (str): The text to summarize.
+        semaphore (asyncio.Semaphore): Concurrency semaphore.
+        model_name (str): The OpenAI model to use.
+        retry (int): Number of retry attempts.
+    
+    Returns:
+        Optional[str]: The summarized text or None if summarization fails.
+    """
+    for attempt in range(retry):
+        async with semaphore:
+            prompt = (
+                "Please provide a concise summary of the following text with a focus on its relevance to AI context window management:\n\n"
+                f"{text}"
+            )
+            payload = {
+                'model': model_name,
+                'messages': [
+                    {'role': 'system', 'content': 'You are a concise summarizer specialized in technical documentation.'},
+                    {'role': 'user', 'content': prompt}
+                ],
+                'max_tokens': 100,
+                'temperature': 0.3
+            }
+            response = await call_api(session, payload)
+            if response:
+                try:
+                    choice = response['choices'][0]
+                    message = choice['message']
+                    summary = message['content'].strip()
+                    return summary
+                except Exception as e:
+                    logger.error(f"Error processing summary API response: {e}")
+                    return None
+            else:
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+    return None
