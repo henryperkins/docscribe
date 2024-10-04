@@ -38,31 +38,32 @@ def validate_config(config):
 
 def load_config(config_path='config.json'):
     """
-    Loads and validates configuration settings from a JSON file.
+    Loads and validates configuration settings based on the environment.
 
     Parameters:
-        config_path (str): The path to the configuration file.
+        config_path (str): The base path to the configuration file.
 
     Returns:
         dict: The validated configuration settings.
     """
     try:
-        if not os.path.exists(config_path):
-            logger.error(f"Configuration file '{config_path}' not found.")
+        env = os.getenv('ENV', 'development')
+        env_config_path = f"config/config.{env}.json"
+        if not os.path.exists(env_config_path):
+            logger.error(f"Environment-specific config file '{env_config_path}' not found.")
             return {}
-        with open(config_path, 'r', encoding='utf-8') as f:
+        with open(env_config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
         # Override API key from environment if available
         config['openai_api_key'] = os.getenv('OPENAI_API_KEY', config.get('openai_api_key'))
         if not validate_config(config):
             logger.error("Configuration validation failed.")
             return {}
-        logger.debug(f"Configuration loaded and validated from '{config_path}'.")
+        logger.debug(f"Configuration loaded and validated from '{env_config_path}'.")
         return config
     except Exception as e:
-        logger.error(f"Error loading configuration from '{config_path}': {e}")
+        logger.error(f"Error loading configuration from '{env_config_path}': {e}")
         return {}
-
 
 def load_function_schema(schema_path):
     """
