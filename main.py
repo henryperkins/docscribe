@@ -21,7 +21,7 @@ from parser import (
     extract_css_structure
 )
 from docs import generate_documentation_report
-from api.openai_client import call_api, fetch_documentation
+from api.openai_client import call_api, fetch_documentation, summarize_text
 from utils import (
     get_language_from_extension,
     format_code,
@@ -46,7 +46,7 @@ async def process_file(
     function_schema: dict
 ) -> Optional[dict]:
     """
-    Processes a single file: extracts structure, generates documentation, and returns documentation data.
+    Processes a single file: extracts structure, generates documentation, inserts documentation into code, and returns documentation data.
     
     Parameters:
         file_path (str): Path to the file.
@@ -118,7 +118,11 @@ async def process_file(
     # Optionally summarize high-relevance elements
     for element in documentation.get("elements", []):
         if element.get("context_relevance_score") == "High":
-            summary = await summarize_text(element.get("description", ""))
+            summary = await summarize_text(
+                session=session,
+                text=element.get("description", ""),
+                semaphore=asyncio.Semaphore(config.get("concurrency", 5))
+            )
             if summary:
                 element["summary"] = summary
     
@@ -129,8 +133,29 @@ async def process_file(
         else:
             element["description_chunks"] = [element["description"]]
     
-    # Insert documentation into code or prepare for report generation
-    # For simplicity, we'll prepare data for the documentation report
+    # Insert documentation into code
+    if language == "python":
+        from parser.python_parser import insert_docstrings as insert_python_docstrings
+        modified_code = insert_python_docstrings(formatted_code, documentation)
+    elif language == "javascript":
+        from parser.javascript_parser import insert_docstrings as insert_javascript_docstrings
+        modified_code = insert_javascript_docstrings(formatted_code, documentation, language)
+    elif language == "html":
+        from parser.html_parser import insert_comments as insert_html_comments
+        modified_code = insert_html_comments(formatted_code, documentation)
+    elif language == "css":
+        from parser.css_parser import insert_comments as insert_css_comments
+        modified_code = insert_css_comments(formatted_code, documentation)
+    else:
+        modified_code = formatted_code  # No insertion for unsupported languages
+    
+    # Backup original file
+    backup_file(file_path)
+    
+    # Write modified code back to file
+    await write_file_async(file_path, modified_code)
+    
+    # Prepare data for documentation report
     return documentation
 
 async def main():
@@ -153,6 +178,10 @@ async def main():
         excluded_files=excluded_files,
         skip_types=skip_extensions
     )
+    
+    if not file_paths:
+        logger.warning("No files found to process.")
+        return
     
     documentation_data = []
     
@@ -179,19 +208,6 @@ async def main():
     
     generate_documentation_report(report, output_file=config.get("output_file", "documentation.md"))
     logger.info(f"Documentation report generated at '{config.get('output_file', 'documentation.md')}'.")
-
-async def summarize_text(text: str) -> Optional[str]:
-    """
-    Summarizes the given text using OpenAI's GPT-4 model.
     
-    Parameters:
-        text (str): The text to summarize.
-    
-    Returns:
-        Optional[str]: The summarized text or None if summarization fails.
-    """
-    # Assuming 'summarize_text' is imported from 'api.openai_client'
-    return await summarize_text(text)
-
 if __name__ == "__main__":
     asyncio.run(main())
