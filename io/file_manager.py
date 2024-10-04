@@ -27,38 +27,36 @@ async def read_file_async(file_path):
         logger.error(f"Error reading file '{file_path}': {e}")
         return None
 
-async def write_file_async(file_path, content):
-    """
-    Asynchronously writes content to a file.
 
-    Parameters:
-        file_path (str): The path to the file.
-        content (str): The content to write.
-    """
+async def backup_file(file_path: str, new_content: str) -> None:
+    """Creates a backup of the file and writes the new content."""
+    backup_path = f"{file_path}.bak"
     try:
-        async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-            await f.write(content)
-        logger.debug(f"Wrote content to '{file_path}'.")
-    except Exception as e:
-        logger.error(f"Error writing to file '{file_path}': {e}")
-
-def backup_file(file_path):
-    """
-    Creates a backup of the file before modification.
-
-    Parameters:
-        file_path (str): The path to the file to backup.
-    """
-    try:
-        backup_path = f"{file_path}.bak"
-        shutil.copyfile(file_path, backup_path)
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+            logger.debug(f"Removed existing backup at '{backup_path}'.")
+        shutil.copy(file_path, backup_path)
         logger.debug(f"Backup created at '{backup_path}'.")
-    except Exception as e:
-        logger.error(f"Error creating backup for '{file_path}': {e}")
 
-def validate_file(file_path, skip_types):
+        # Write the new content to the original file
+        async with aiofiles.open(file_path, "w", encoding="utf-8") as f:
+            await f.write(new_content)
+        logger.info(f"Inserted documentation into '{file_path}'.")
+
+    except Exception as e:
+        logger.error(f"Error writing to '{file_path}': {e}", exc_info=True)
+        if os.path.exists(backup_path):
+            shutil.copy(backup_path, file_path)
+            os.remove(backup_path)
+            logger.info(f"Restored original file from backup for '{file_path}'.")
+
+
+def validate_file(file_path: str, skip_types: Set[str]) -> bool:
     """
-    Validates a file by checking if it's not binary and has a valid extension.
+    Validates a file by checking:
+    1. If it exists and is a file.
+    2. If its extension is not in the skip_types set.
+    3. If it is not a binary file.
 
     Parameters:
         file_path (str): The path to the file.
@@ -71,21 +69,26 @@ def validate_file(file_path, skip_types):
         if not os.path.isfile(file_path):
             logger.debug(f"'{file_path}' is not a file.")
             return False
-        ext = os.path.splitext(file_path)[1]
+
+        _, ext = os.path.splitext(file_path)
         if ext.lower() in skip_types:
             logger.debug(f"Skipping '{file_path}' due to extension '{ext}'.")
             return False
+
         # Check if file is binary
         with open(file_path, 'rb') as f:
             if b'\0' in f.read(1024):
                 logger.debug(f"Skipping binary file '{file_path}'.")
                 return False
+
         return True
+
     except Exception as e:
         logger.error(f"Error validating file '{file_path}': {e}")
         return False
+        
 
-def get_all_file_paths(repo_path, excluded_dirs, excluded_files, skip_types):
+def get_all_file_paths(repo_path: str, excluded_dirs: Set[str], excluded_files: Set[str], skip_types: Set[str]) -> List[str]:
     """
     Retrieves all file paths based on exclusions and skips.
 
