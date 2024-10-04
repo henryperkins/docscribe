@@ -6,15 +6,45 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def validate_config(config):
+    """
+    Validates the loaded configuration.
+
+    Parameters:
+        config (dict): The configuration settings.
+
+    Returns:
+        bool: True if valid, False otherwise.
+    """
+    required_fields = [
+        'root_dir',
+        'exclude_dirs',
+        'exclude_files',
+        'skip_extensions',
+        'context_keywords',
+        'openai_api_key',
+        'openai_model',
+        'concurrency',
+        'chunk_max_length',
+        'output_file',
+        'project_info',
+        'style_guidelines'
+    ]
+    missing_fields = [field for field in required_fields if field not in config or not config[field]]
+    if missing_fields:
+        logger.error(f"Missing configuration fields: {', '.join(missing_fields)}")
+        return False
+    return True
+
 def load_config(config_path='config.json'):
     """
-    Loads configuration settings from a JSON file.
+    Loads and validates configuration settings from a JSON file.
 
     Parameters:
         config_path (str): The path to the configuration file.
 
     Returns:
-        dict: The configuration settings.
+        dict: The validated configuration settings.
     """
     try:
         if not os.path.exists(config_path):
@@ -24,11 +54,15 @@ def load_config(config_path='config.json'):
             config = json.load(f)
         # Override API key from environment if available
         config['openai_api_key'] = os.getenv('OPENAI_API_KEY', config.get('openai_api_key'))
-        logger.debug(f"Configuration loaded from '{config_path}'.")
+        if not validate_config(config):
+            logger.error("Configuration validation failed.")
+            return {}
+        logger.debug(f"Configuration loaded and validated from '{config_path}'.")
         return config
     except Exception as e:
         logger.error(f"Error loading configuration from '{config_path}': {e}")
         return {}
+
 
 def load_function_schema(schema_path):
     """
