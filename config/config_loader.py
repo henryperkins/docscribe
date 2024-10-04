@@ -22,6 +22,8 @@ def load_config(config_path='config.json'):
             return {}
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
+        # Override API key from environment if available
+        config['openai_api_key'] = os.getenv('OPENAI_API_KEY', config.get('openai_api_key'))
         logger.debug(f"Configuration loaded from '{config_path}'.")
         return config
     except Exception as e:
